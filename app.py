@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime
+import re
 
 st.set_page_config(
     page_title="Кредит-Сервис",
@@ -9,6 +10,31 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+def validate_application(data: dict) -> list[str]:
+    errors = []
+
+    # ФИО
+    if not re.match(r"^[А-Яа-яЁёA-Za-z\s\-]{2,100}$", data["full_name"].strip()):
+        errors.append("ФИО должно содержать только буквы, пробелы и дефисы (2–100 символов).")
+
+    # Возраст и стаж
+    max_experience = data["age"] - 14
+    if data["employment_years"] > max_experience:
+        errors.append(
+            f"Стаж ({data['employment_years']} лет) не может превышать "
+            f"{max_experience} лет при возрасте {data['age']}."
+        )
+
+    # Занятость и доход
+    if data["employment_type"] == "Безработный" and data["income"] > 0:
+        errors.append("Безработный не может иметь официальный доход.")
+
+    # Доход и существующие платежи
+    if data["existing_payments"] > data["income"]:
+        errors.append("Текущие платежи по кредитам не могут превышать доход.")
+
+    return errors
 
 def score_age(age: int) -> tuple[int, str]:
     if 30 <= age <= 50:
@@ -271,6 +297,11 @@ def page_application():
         submitted = st.form_submit_button("Отправить заявку", use_container_width=True)
 
     if submitted:
+        errors = validate_application(data)
+        if errors:
+            for err in errors:
+                st.error(err)
+            return
         if not full_name.strip():
             st.error("Пожалуйста, укажите ФИО.")
             return
