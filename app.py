@@ -297,11 +297,6 @@ def page_application():
         submitted = st.form_submit_button("Отправить заявку", use_container_width=True)
 
     if submitted:
-        errors = validate_application(data)
-        if errors:
-            for err in errors:
-                st.error(err)
-            return
         if not full_name.strip():
             st.error("Пожалуйста, укажите ФИО.")
             return
@@ -323,6 +318,12 @@ def page_application():
             "rate": float(rate),
             "credit_history": credit_history,
         }
+
+        errors = validate_application(data)
+        if errors:
+            for err in errors:
+                st.error(err)
+            return
 
         result = calculate_score(data)
         st.session_state["application"] = data
