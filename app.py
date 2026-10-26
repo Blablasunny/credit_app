@@ -190,6 +190,11 @@ def calculate_score(data: dict) -> dict:
     max_total = sum(d[2] for d in details)
     normalized = round(total / max_total * 100)
 
+    if new_monthly + 25000 * (1 + data["dependents"]) > data["income"]:
+        decision = "ОТКАЗАНО"
+        color = "red"
+        rate_add = None
+
     if normalized >= 75:
         decision = "ОДОБРЕН"
         color = "green"
