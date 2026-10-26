@@ -194,6 +194,19 @@ def calculate_score(data: dict) -> dict:
         decision = "ОТКАЗАНО"
         color = "red"
         rate_add = None
+        return {
+            "details": details,
+            "total": total,
+            "max_total": max_total,
+            "normalized": normalized,
+            "decision": decision,
+            "color": color,
+            "dti": dti,
+            "new_monthly": new_monthly,
+            "total_monthly": total_monthly,
+            "rate_add": rate_add,
+        }
+
 
     if normalized >= 75:
         decision = "ОДОБРЕН"
