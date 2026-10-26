@@ -11,6 +11,16 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ============================================================
+# КОНСТАНТЫ КОМПЕНСИРУЮЩЕГО ПРАВИЛА
+# ============================================================
+MIN_LIVING_WAGE = 25_000          # прожиточный минимум на члена домохозяйства
+SCORE_TIER_1 = 75                 # порог «хороший скоринг»
+TOLERANCE_TIER_1 = 0.90           # допуск 90% от минимума
+SCORE_TIER_2 = 85                 # порог «отличный скоринг»
+TOLERANCE_TIER_2 = 0.80           # допуск 80% от минимума
+BAD_HISTORY = "Просрочки > 90 дней"
+
 
 # ============================================================
 # ВАЛИДАЦИЯ ВВОДА
@@ -18,13 +28,11 @@ st.set_page_config(
 def validate_application(data: dict) -> list[str]:
     errors = []
 
-    # ФИО
     if not re.match(r"^[А-Яа-яЁёA-Za-z\s\-]{2,100}$", data["full_name"].strip()):
         errors.append(
             "ФИО должно содержать только буквы, пробелы и дефисы (2–100 символов)."
         )
 
-    # Возраст и стаж
     max_experience = data["age"] - 14
     if data["employment_years"] > max_experience:
         errors.append(
@@ -32,11 +40,9 @@ def validate_application(data: dict) -> list[str]:
             f"{max_experience} лет при возрасте {data['age']}."
         )
 
-    # Занятость и доход
     if data["employment_type"] == "Безработный" and data["income"] > 0:
         errors.append("Безработный не может иметь официальный доход.")
 
-    # Доход и существующие платежи
     if data["existing_payments"] > data["income"]:
         errors.append("Текущие платежи по кредитам не могут превышать доход.")
 
@@ -215,24 +221,54 @@ def calculate_score(data: dict) -> dict:
     max_total = sum(d[2] for d in details)
     normalized = round(total / max_total * 100)
 
-    # --- ПРАВИЛО ОСТАТОЧНОГО ДОХОДА ---
-    # После всех платежей на каждого члена домохозяйства
-    # (заёмщик + иждивенцы) должен оставаться прожиточный минимум.
-    min_living_wage = 25_000
+    # --- ПРАВИЛО ОСТАТОЧНОГО ДОХОДА (с компенсацией за высокий скоринг) ---
     household_size = 1 + data["dependents"]
-    required_minimum = min_living_wage * household_size
+    required_minimum = MIN_LIVING_WAGE * household_size
     free_income = data["income"] - total_monthly
 
+    has_bad_history = data["credit_history"] == BAD_HISTORY
+
+    if normalized >= SCORE_TIER_2 and not has_bad_history:
+        tolerance = TOLERANCE_TIER_2
+        compensation_note = (
+            f"Скоринг {normalized}/100 — превосходный профиль. "
+            f"Требование к остатку снижено до {tolerance:.0%} прожиточного минимума."
+        )
+    elif normalized >= SCORE_TIER_1 and not has_bad_history:
+        tolerance = TOLERANCE_TIER_1
+        compensation_note = (
+            f"Скоринг {normalized}/100 — хороший профиль. "
+            f"Требование к остатку снижено до {tolerance:.0%} прожиточного минимума."
+        )
+    else:
+        tolerance = 1.0
+        compensation_note = None
+        if has_bad_history and normalized >= SCORE_TIER_1:
+            compensation_note = (
+                "Компенсирующее правило не применено: "
+                "просрочки более 90 дней блокируют послабление."
+            )
+
+    effective_minimum = required_minimum * tolerance
+
     rejection_reason = None
-    if free_income < required_minimum:
+    compensated = False
+
+    if free_income < effective_minimum:
+        tolerance_note = (
+            f", с учётом компенсирующего правила × {tolerance:.0%}"
+            if tolerance < 1.0
+            else ""
+        )
         rejection_reason = (
             f"Недостаточно средств после погашения кредита: остаётся "
             f"{free_income:,.0f} ₽/мес, а требуется минимум "
-            f"{required_minimum:,.0f} ₽/мес "
-            f"(прожиточный минимум {min_living_wage:,.0f} ₽ × "
-            f"{household_size} чел. домохозяйства: заёмщик + "
-            f"{data['dependents']} иждивенц.)."
+            f"{effective_minimum:,.0f} ₽/мес "
+            f"(прожиточный минимум {MIN_LIVING_WAGE:,.0f} ₽ × "
+            f"{household_size} чел. домохозяйства{tolerance_note})."
         )
+    elif tolerance < 1.0 and free_income < required_minimum:
+        compensated = True
 
     base_result = {
         "details": details,
@@ -245,6 +281,10 @@ def calculate_score(data: dict) -> dict:
         "rejection_reason": rejection_reason,
         "free_income": free_income,
         "required_minimum": required_minimum,
+        "effective_minimum": effective_minimum,
+        "tolerance": tolerance,
+        "compensation_note": compensation_note,
+        "compensated": compensated,
     }
 
     if rejection_reason:
@@ -255,8 +295,7 @@ def calculate_score(data: dict) -> dict:
             "rate_add": None,
         }
 
-    # --- ПОРОГОВЫЕ РЕШЕНИЯ ---
-    if normalized >= 75:
+    if normalized >= SCORE_TIER_1:
         decision = "ОДОБРЕН"
         color = "green"
         rate_add = 0.0
@@ -394,6 +433,11 @@ def page_application():
         st.markdown("---")
         if result["decision"].startswith("ОДОБРЕН"):
             st.success(f"### Решение: {result['decision']}")
+            if result.get("compensated"):
+                st.info(
+                    "**Применено компенсирующее правило:** остаток ниже "
+                    "стандартного минимума, но одобрен благодаря высокому скорингу."
+                )
         else:
             st.error(f"### Решение: {result['decision']}")
             if result.get("rejection_reason"):
@@ -454,19 +498,45 @@ def page_details():
         "free_income", data["income"] - result["total_monthly"]
     )
     required_minimum = result.get("required_minimum")
+    effective_minimum = result.get("effective_minimum", required_minimum)
+    tolerance = result.get("tolerance", 1.0)
+    compensated = result.get("compensated", False)
+    compensation_note = result.get("compensation_note")
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     col1.metric("Свободные средства/мес", f"{free_income:,.0f} ₽")
     if required_minimum is not None:
-        col2.metric("Требуемый минимум/мес", f"{required_minimum:,.0f} ₽")
+        col2.metric("Прожиточный минимум", f"{required_minimum:,.0f} ₽")
+    if effective_minimum is not None and tolerance < 1.0:
+        col3.metric(
+            f"Требуется (×{tolerance:.0%})",
+            f"{effective_minimum:,.0f} ₽",
+            delta=f"−{required_minimum - effective_minimum:,.0f} ₽",
+            delta_color="inverse",
+        )
+    elif effective_minimum is not None:
+        col3.metric("Требуется", f"{effective_minimum:,.0f} ₽")
 
     if result.get("rejection_reason"):
         st.error(f"**Причина отказа:** {result['rejection_reason']}")
-    elif required_minimum is not None and free_income >= required_minimum:
+    elif compensated:
+        st.info(
+            f"**Одобрено с применением компенсирующего правила.** "
+            f"После всех платежей остаётся {free_income:,.0f} ₽/мес — "
+            f"это ниже стандартного минимума {required_minimum:,.0f} ₽/мес, "
+            f"но выше пониженного порога {effective_minimum:,.0f} ₽/мес "
+            f"(×{tolerance:.0%}) благодаря высокому скорингу."
+        )
+        if compensation_note:
+            st.caption(compensation_note)
+    elif effective_minimum is not None and free_income >= effective_minimum:
         st.success(
             f"После всех платежей остаётся {free_income:,.0f} ₽/мес — "
-            f"это выше требуемого минимума {required_minimum:,.0f} ₽/мес."
+            f"это выше требуемого минимума {effective_minimum:,.0f} ₽/мес."
         )
+
+    if compensation_note and not compensated:
+        st.caption(compensation_note)
 
     st.markdown("---")
 
